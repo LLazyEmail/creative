@@ -1,11 +1,4 @@
 ---
-items:
-  - things:
-      thing1: huey
-      things2: dewey
-      thing3: louie
-  - other things:
-      key: value
 recipes:
   - monday:
       title: Chipotle Cream Skillet Chicken
