@@ -29,15 +29,11 @@ newsletters.
 
 | Source Folder (GitLab)                                   | Local Destination                            | Files |
 |----------------------------------------------------------|----------------------------------------------|-------|
-| `newsletters/logos/brand`                                | `newsletters/logos/brand/`                   | —     |
-| `newsletters/logos/all`                                  | `newsletters/logos/all/`                     | —     |
-| `newsletters/logos/thematic/2021`                        | `newsletters/logos/thematic/2021/`           | —     |
-| `newsletters/memes/2021/Jan`                             | `newsletters/memes/2021/Jan/`                | —     |
+| `newsletters/logos/brand`                                | `newsletters/logos/brand/`                   | 1     |
+| `newsletters/logos/all`                                  | `newsletters/logos/all/`                     | 31     |
+| `newsletters/logos/thematic/2021`                        | `newsletters/logos/thematic/2021/`           | 1     |
+| `newsletters/memes/2021/Jan`                             | `newsletters/memes/2021/Jan/`                | 1     |
 
-> **Note:** File counts show `—` because the GitLab host (`gitlab.com`) was not reachable
-> from the CI environment during the initial PR creation. The directory structure and tooling
-> are in place; run `fetch-from-gitlab.sh` (or trigger the GitHub Actions workflow) to populate
-> the directories with the actual binary assets.
 
 ---
 
