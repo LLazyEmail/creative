@@ -1,0 +1,200 @@
+name: Import HackerNoon Static Assets from GitLab
+
+on:
+  workflow_dispatch:
+    inputs:
+      gitlab_ref:
+        description: "GitLab branch/tag to import from"
+        required: false
+        default: "master"
+
+jobs:
+  import-assets:
+    name: Download and commit GitLab assets
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    env:
+      GITLAB_API: https://gitlab.com/api/v4
+      PROJECT: hackernoon%2Fcreative
+      DEST_ROOT: files/templates/hackernoon-email-statics
+      GITLAB_REF: ${{ github.event.inputs.gitlab_ref || 'master' }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - name: Download assets from GitLab
+        env:
+          GITLAB_TOKEN: ${{ secrets.GITLAB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          AUTH_HEADER=""
+          if [[ -n "${GITLAB_TOKEN:-}" ]]; then
+            AUTH_HEADER="PRIVATE-TOKEN: ${GITLAB_TOKEN}"
+            echo "Using authenticated GitLab API requests"
+          else
+            echo "Using unauthenticated GitLab API requests (rate-limited)"
+          fi
+
+          curl_get() {
+            local url="$1"
+            local dest="${2:-}"
+            if [[ -n "$AUTH_HEADER" ]]; then
+              if [[ -n "$dest" ]]; then
+                curl -sSfL -H "$AUTH_HEADER" "$url" -o "$dest"
+              else
+                curl -sSfL -H "$AUTH_HEADER" "$url"
+              fi
+            else
+              if [[ -n "$dest" ]]; then
+                curl -sSfL "$url" -o "$dest"
+              else
+                curl -sSfL "$url"
+              fi
+            fi
+          }
+
+          fetch_folder() {
+            local src_path="$1"
+            local dest_dir="$2"
+            local page=1
+            local total=0
+
+            echo "→ Fetching: $src_path"
+            mkdir -p "$dest_dir"
+
+            while true; do
+              encoded=$(python3 -c "import urllib.parse; print(urllib.parse.quote('${src_path}', safe=''))")
+              url="${GITLAB_API}/projects/${PROJECT}/repository/tree?path=${encoded}&ref=${GITLAB_REF}&recursive=true&per_page=100&page=${page}"
+              response=$(curl_get "$url")
+
+              # Exit loop if no more items
+              count=$(echo "$response" | python3 -c "import json,sys; print(len(json.load(sys.stdin)))" 2>/dev/null || echo "0")
+              if [[ "$count" -eq 0 ]]; then break; fi
+
+              files=$(echo "$response" | python3 -c "
+          import json, sys
+          items = json.load(sys.stdin)
+          for item in items:
+              if item['type'] == 'blob':
+                  print(item['path'])
+          ")
+
+              while IFS= read -r file_path; do
+                [[ -z "$file_path" ]] && continue
+                rel="${file_path#${src_path}/}"
+                dest_file="${dest_dir}/${rel}"
+                mkdir -p "$(dirname "$dest_file")"
+                encoded_file=$(python3 -c "import urllib.parse; print(urllib.parse.quote('${file_path}', safe=''))")
+                file_url="${GITLAB_API}/projects/${PROJECT}/repository/files/${encoded_file}/raw?ref=${GITLAB_REF}"
+                curl_get "$file_url" "$dest_file"
+                echo "  Downloaded: $rel"
+                total=$((total + 1))
+              done <<< "$files"
+
+              page=$((page + 1))
+              [[ "$count" -lt 100 ]] && break
+            done
+
+            # Remove placeholder .gitkeep if real files were downloaded
+            if [[ $total -gt 0 && -f "${dest_dir}/.gitkeep" ]]; then
+              rm -f "${dest_dir}/.gitkeep"
+            fi
+
+            echo "  → $total file(s) downloaded"
+            echo "$total"
+          }
+
+          declare -A FOLDERS=(
+            ["newsletters/logos/brand"]="${DEST_ROOT}/newsletters/logos/brand"
+            ["newsletters/logos/all"]="${DEST_ROOT}/newsletters/logos/all"
+            ["newsletters/logos/thematic/2021"]="${DEST_ROOT}/newsletters/logos/thematic/2021"
+            ["newsletters/memes/2021/Jan"]="${DEST_ROOT}/newsletters/memes/2021/Jan"
+          )
+
+          grand_total=0
+          declare -A FILE_COUNTS
+
+          for src in "${!FOLDERS[@]}"; do
+            cnt=$(fetch_folder "$src" "${FOLDERS[$src]}")
+            FILE_COUNTS["$src"]=$cnt
+            grand_total=$((grand_total + cnt))
+          done
+
+          echo ""
+          echo "=== Import Summary ==="
+          for src in "${!FILE_COUNTS[@]}"; do
+            echo "  ${src}: ${FILE_COUNTS[$src]} file(s)"
+          done
+          echo "  Total: $grand_total file(s)"
+
+          # Update IMPORT_SOURCES.md with actual file counts
+          python3 << 'PYEOF'
+          import re, os
+
+          counts = {}
+          dest_root = os.environ["DEST_ROOT"]
+          sources = {
+              "newsletters/logos/brand": f"{dest_root}/newsletters/logos/brand",
+              "newsletters/logos/all": f"{dest_root}/newsletters/logos/all",
+              "newsletters/logos/thematic/2021": f"{dest_root}/newsletters/logos/thematic/2021",
+              "newsletters/memes/2021/Jan": f"{dest_root}/newsletters/memes/2021/Jan",
+          }
+          for src, path in sources.items():
+              count = sum(
+                  len(files)
+                  for _, _, files in os.walk(path)
+              )
+              counts[src] = count
+
+          md_path = f"{dest_root}/IMPORT_SOURCES.md"
+          with open(md_path) as f:
+              content = f.read()
+
+          from datetime import datetime, timezone
+          today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+          content = re.sub(r"\*\*\d{4}-\d{2}-\d{2}\*\*", f"**{today}**", content)
+
+          for src, count in counts.items():
+              content = re.sub(
+                  rf"(`{re.escape(src)}`.*?\| )—",
+                  rf"\g<1>{count}",
+                  content,
+              )
+
+          # Remove the "Note" about GitLab being unreachable
+          content = re.sub(
+              r"> \*\*Note:\*\*.*?(?=\n---|\Z)",
+              "",
+              content,
+              flags=re.DOTALL,
+          )
+
+          with open(md_path, "w") as f:
+              f.write(content)
+
+          print("Updated IMPORT_SOURCES.md with file counts")
+          PYEOF
+
+      - name: Commit and push imported assets
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add files/templates/hackernoon-email-statics/
+          if git diff --cached --quiet; then
+            echo "No changes to commit"
+          else
+            git commit -m "Import HackerNoon static assets from GitLab ($(date -u +%Y-%m-%d))"
+            git push
+            echo "Assets committed and pushed"
+          fi
